@@ -67,19 +67,6 @@ func main() {
 		ParamFunc: flags.Set,
 	}
 
-	//input, err := ioutil.ReadAll(os.Stdin)
-	//if err != nil {
-	//	fmt.Fprintf(os.Stderr, "Failed to read input: %v\n", err)
-	//	os.Exit(1)
-	//}
-
-	// 解析 CodeGeneratorRequest
-	//var request pluginpb.CodeGeneratorRequest
-	//if err := proto.Unmarshal(input, &request); err != nil {
-	//	fmt.Fprintf(os.Stderr, "Failed to parse input: %v\n", err)
-	//	os.Exit(1)
-	//}
-
 	opts.Run(func(plugin *protogen.Plugin) error {
 		// Enable "optional" keyword in front of type (e.g. optional string label = 1;)
 		plugin.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
@@ -97,10 +84,13 @@ func main() {
 			}
 		} else {
 			outputFile := plugin.NewGeneratedFile(DefaultOutputFile, "")
-			return generator.NewOpenAPIGenerator(plugin, conf, plugin.Files).Run(outputFile)
+			gen := generator.NewOpenAPIGenerator(plugin, conf, plugin.Files)
+			if err := gen.Run(outputFile); err != nil {
+				return err
+			}
 		}
+		serverConf.OutputMode = conf.OutputMode
 		outputFile := plugin.NewGeneratedFile("swagger.go", "")
-		generator.NewServerGenerator(serverConf).Generate(outputFile)
-		return nil
+		return generator.NewServerGenerator(serverConf, plugin.Files).Generate(outputFile)
 	})
 }

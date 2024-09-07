@@ -35,18 +35,17 @@ package generator
 
 import (
 	"fmt"
+	"github.com/cloudwego/hertz/cmd/hz/protobuf/api"
 	"log"
 	"regexp"
 	"sort"
 	"strings"
 
 	wk "github.com/hertz-contrib/swagger-generate/protoc-gen-rpc-swagger/generator/wellknown"
-	"github.com/hertz-contrib/swagger-generate/protoc-gen-rpc-swagger/protobuf/api"
 	"github.com/hertz-contrib/swagger-generate/protoc-gen-rpc-swagger/protobuf/openapi"
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/runtime/protoimpl"
 	any_pb "google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -165,44 +164,15 @@ func (g *OpenAPIGenerator) buildDocument() *openapi.Document {
 	// If paths methods has servers, but they're all the same, then move servers to path level
 	for _, path := range d.Paths.Path {
 		var servers []string
-		// Only 1 server will ever be set, per method, by the generator
-		if path.Value.Get != nil && len(path.Value.Get.Servers) == 1 {
-			servers = appendUnique(servers, path.Value.Get.Servers[0].Url)
-			allServers = appendUnique(allServers, path.Value.Get.Servers[0].Url)
-		}
 		if path.Value.Post != nil && len(path.Value.Post.Servers) == 1 {
 			servers = appendUnique(servers, path.Value.Post.Servers[0].Url)
 			allServers = appendUnique(allServers, path.Value.Post.Servers[0].Url)
 		}
-		if path.Value.Put != nil && len(path.Value.Put.Servers) == 1 {
-			servers = appendUnique(servers, path.Value.Put.Servers[0].Url)
-			allServers = appendUnique(allServers, path.Value.Put.Servers[0].Url)
-		}
-		if path.Value.Delete != nil && len(path.Value.Delete.Servers) == 1 {
-			servers = appendUnique(servers, path.Value.Delete.Servers[0].Url)
-			allServers = appendUnique(allServers, path.Value.Delete.Servers[0].Url)
-		}
-		if path.Value.Patch != nil && len(path.Value.Patch.Servers) == 1 {
-			servers = appendUnique(servers, path.Value.Patch.Servers[0].Url)
-			allServers = appendUnique(allServers, path.Value.Patch.Servers[0].Url)
-		}
 
 		if len(servers) == 1 {
 			path.Value.Servers = []*openapi.Server{{Url: servers[0]}}
-			if path.Value.Get != nil {
-				path.Value.Get.Servers = nil
-			}
 			if path.Value.Post != nil {
 				path.Value.Post.Servers = nil
-			}
-			if path.Value.Put != nil {
-				path.Value.Put.Servers = nil
-			}
-			if path.Value.Delete != nil {
-				path.Value.Delete.Servers = nil
-			}
-			if path.Value.Patch != nil {
-				path.Value.Patch.Servers = nil
 			}
 		}
 	}
@@ -255,7 +225,7 @@ func (g *OpenAPIGenerator) filterCommentString(c protogen.Comments) string {
 	return strings.TrimSpace(comment)
 }
 
-func (g *OpenAPIGenerator) getSchemaByOption(inputMessage *protogen.Message, bodyType *protoimpl.ExtensionInfo) *openapi.Schema {
+func (g *OpenAPIGenerator) getSchemaByOption(inputMessage *protogen.Message) *openapi.Schema {
 	// Build an array holding the fields of the message.
 	definitionProperties := &openapi.Properties{
 		AdditionalProperties: make([]*openapi.NamedSchemaOrReference, 0),
@@ -272,74 +242,69 @@ func (g *OpenAPIGenerator) getSchemaByOption(inputMessage *protogen.Message, bod
 	}
 	var required []string
 	for _, field := range inputMessage.Fields {
-		if ext := proto.GetExtension(field.Desc.Options(), bodyType); ext != "" {
-			if contains(allRequired, ext.(string)) {
-				required = append(required, ext.(string))
-			}
-
-			// Get the field description from the comments.
-			description := g.filterCommentString(field.Comments.Leading)
-			// Check the field annotations to see if this is a readonly or writeonly field.
-			inputOnly := false
-			outputOnly := false
-			extension := proto.GetExtension(field.Desc.Options(), annotations.E_FieldBehavior)
-			if extension != nil {
-				switch v := extension.(type) {
-				case []annotations.FieldBehavior:
-					for _, vv := range v {
-						switch vv {
-						case annotations.FieldBehavior_OUTPUT_ONLY:
-							outputOnly = true
-						case annotations.FieldBehavior_INPUT_ONLY:
-							inputOnly = true
-						case annotations.FieldBehavior_REQUIRED:
-							required = append(required, g.reflect.formatFieldName(field.Desc))
-						}
-					}
-				default:
-					log.Printf("unsupported extension type %T", extension)
-				}
-			}
-
-			// The field is either described by a reference or a schema.
-			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
-			if fieldSchema == nil {
-				continue
-			}
-
-			// If this field has siblings and is a $ref now, create a new schema use `allOf` to wrap it
-			wrapperNeeded := inputOnly || outputOnly || description != ""
-			if wrapperNeeded {
-				if _, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Reference); ok {
-					fieldSchema = &openapi.SchemaOrReference{Oneof: &openapi.SchemaOrReference_Schema{Schema: &openapi.Schema{
-						AllOf: []*openapi.SchemaOrReference{fieldSchema},
-					}}}
-				}
-			}
-
-			if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
-				schema.Schema.Description = description
-				schema.Schema.ReadOnly = outputOnly
-				schema.Schema.WriteOnly = inputOnly
-
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
-				if extProperty != nil {
-					proto.Merge(schema.Schema, extProperty.(*openapi.Schema))
-				}
-			}
-			extName := proto.GetExtension(field.Desc.Options(), bodyType).(string)
-			if extName == "" {
-				extName = g.reflect.formatFieldName(field.Desc)
-			}
-			definitionProperties.AdditionalProperties = append(
-				definitionProperties.AdditionalProperties,
-				&openapi.NamedSchemaOrReference{
-					Name:  extName,
-					Value: fieldSchema,
-				},
-			)
+		extName := g.reflect.formatFieldName(field.Desc)
+		if contains(allRequired, extName) {
+			required = append(required, extName)
 		}
+		// Get the field description from the comments.
+		description := g.filterCommentString(field.Comments.Leading)
+		// Check the field annotations to see if this is a readonly or writeonly field.
+		inputOnly := false
+		outputOnly := false
+		extension := proto.GetExtension(field.Desc.Options(), annotations.E_FieldBehavior)
+		if extension != nil {
+			switch v := extension.(type) {
+			case []annotations.FieldBehavior:
+				for _, vv := range v {
+					switch vv {
+					case annotations.FieldBehavior_OUTPUT_ONLY:
+						outputOnly = true
+					case annotations.FieldBehavior_INPUT_ONLY:
+						inputOnly = true
+					case annotations.FieldBehavior_REQUIRED:
+						required = append(required, g.reflect.formatFieldName(field.Desc))
+					}
+				}
+			default:
+				log.Printf("unsupported extension type %T", extension)
+			}
+		}
+
+		// The field is either described by a reference or a schema.
+		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+		if fieldSchema == nil {
+			continue
+		}
+
+		// If this field has siblings and is a $ref now, create a new schema use `allOf` to wrap it
+		wrapperNeeded := inputOnly || outputOnly || description != ""
+		if wrapperNeeded {
+			if _, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Reference); ok {
+				fieldSchema = &openapi.SchemaOrReference{Oneof: &openapi.SchemaOrReference_Schema{Schema: &openapi.Schema{
+					AllOf: []*openapi.SchemaOrReference{fieldSchema},
+				}}}
+			}
+		}
+
+		if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
+			schema.Schema.Description = description
+			schema.Schema.ReadOnly = outputOnly
+			schema.Schema.WriteOnly = inputOnly
+
+			// Merge any `Property` annotations with the current
+			extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
+			if extProperty != nil {
+				proto.Merge(schema.Schema, extProperty.(*openapi.Schema))
+			}
+		}
+
+		definitionProperties.AdditionalProperties = append(
+			definitionProperties.AdditionalProperties,
+			&openapi.NamedSchemaOrReference{
+				Name:  extName,
+				Value: fieldSchema,
+			},
+		)
 	}
 
 	schema := &openapi.Schema{
@@ -359,7 +324,6 @@ func (g *OpenAPIGenerator) getSchemaByOption(inputMessage *protogen.Message, bod
 
 func (g *OpenAPIGenerator) buildOperation(
 	d *openapi.Document,
-	methodName string,
 	operationID string,
 	tagName string,
 	description string,
@@ -371,183 +335,70 @@ func (g *OpenAPIGenerator) buildOperation(
 	// Parameters array to hold all parameter objects
 	var parameters []*openapi.ParameterOrReference
 
-	// Iterate through each field in the input message
-	for _, field := range inputMessage.Fields {
-		var paramName, paramIn, paramDesc string
-		var fieldSchema *openapi.SchemaOrReference
-		required := false
-		var ext any
-		// Check for each type of extension (query, path, cookie, header)
-		if ext = proto.GetExtension(field.Desc.Options(), api.E_Query); ext != "" {
-			paramName = proto.GetExtension(field.Desc.Options(), api.E_Query).(string)
-			paramIn = ParameterInQuery
-			paramDesc = g.filterCommentString(field.Comments.Leading)
-			fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc)
-			if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
-				if extProperty != nil {
-					if property, ok := extProperty.(*openapi.Schema); ok {
-						proto.Merge(schema.Schema, property)
-					} else {
-						log.Printf("unexpected type for Property: %T", extProperty)
-					}
-				}
-			}
-		} else if ext = proto.GetExtension(field.Desc.Options(), api.E_Path); ext != "" {
-			paramName = proto.GetExtension(field.Desc.Options(), api.E_Path).(string)
-			paramIn = ParameterInPath
-			paramDesc = g.filterCommentString(field.Comments.Leading)
-			fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc)
-			if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
-				if extProperty != nil {
-					proto.Merge(schema.Schema, extProperty.(*openapi.Schema))
-				}
-			}
-			// According to the OpenAPI specification, if a path parameter exists, it must be required.
-			required = true
-		} else if ext = proto.GetExtension(field.Desc.Options(), api.E_Cookie); ext != "" {
-			paramName = proto.GetExtension(field.Desc.Options(), api.E_Cookie).(string)
-			paramIn = ParameterInCookie
-			paramDesc = g.filterCommentString(field.Comments.Leading)
-			fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc)
-			if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
-				if extProperty != nil {
-					proto.Merge(schema.Schema, extProperty.(*openapi.Schema))
-				}
-			}
-		} else if ext = proto.GetExtension(field.Desc.Options(), api.E_Header); ext != "" {
-			paramName = proto.GetExtension(field.Desc.Options(), api.E_Header).(string)
-			paramIn = ParameterInHeader
-			paramDesc = g.filterCommentString(field.Comments.Leading)
-			fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc)
-			if schema, ok := fieldSchema.Oneof.(*openapi.SchemaOrReference_Schema); ok {
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), openapi.E_Property)
-				if extProperty != nil {
-					proto.Merge(schema.Schema, extProperty.(*openapi.Schema))
-				}
-			}
-		}
-		parameter := &openapi.Parameter{
-			Name:        paramName,
-			In:          paramIn,
-			Description: paramDesc,
-			Required:    required,
-			Schema:      fieldSchema,
-		}
-		extParameter := proto.GetExtension(field.Desc.Options(), openapi.E_Parameter)
-		if extParameter != nil {
-			if parameterExt, ok := extParameter.(*openapi.Parameter); ok {
-				proto.Merge(parameter, parameterExt)
-			} else {
-				log.Printf("unexpected type for Parameter: %T", extParameter)
-			}
-		}
-
-		// Append the parameter to the parameters array if it was set
-		if paramName != "" && paramIn != "" {
-			parameters = append(parameters, &openapi.ParameterOrReference{
-				Oneof: &openapi.ParameterOrReference_Parameter{
-					Parameter: parameter,
-				},
-			})
-		}
+	fieldSchema := &openapi.SchemaOrReference{
+		Oneof: &openapi.SchemaOrReference_Schema{
+			Schema: &openapi.Schema{
+				Type: SchemaObjectType,
+			},
+		},
 	}
+	parameter := &openapi.Parameter{
+		Name:        ParameterNameTTHeader,
+		In:          ParameterInQuery,
+		Description: ParameterDescription,
+		Required:    false,
+		Schema:      fieldSchema,
+	}
+
+	parameters = append(parameters, &openapi.ParameterOrReference{
+		Oneof: &openapi.ParameterOrReference_Parameter{
+			Parameter: parameter,
+		},
+	})
 
 	var RequestBody *openapi.RequestBodyOrReference
-	if methodName != HttpMethodGet && methodName != HttpMethodHead && methodName != HttpMethodDelete {
-		bodySchema := g.getSchemaByOption(inputMessage, api.E_Body)
-		formSchema := g.getSchemaByOption(inputMessage, api.E_Form)
-		rawBodySchema := g.getSchemaByOption(inputMessage, api.E_RawBody)
+	bodySchema := g.getSchemaByOption(inputMessage)
+	var additionalProperties []*openapi.NamedMediaType
 
-		var additionalProperties []*openapi.NamedMediaType
-
-		if len(bodySchema.Properties.AdditionalProperties) > 0 {
-			additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
-				Name: ContentTypeJSON,
-				Value: &openapi.MediaType{
-					Schema: &openapi.SchemaOrReference{
-						Oneof: &openapi.SchemaOrReference_Schema{
-							Schema: bodySchema,
-						},
+	if len(bodySchema.Properties.AdditionalProperties) > 0 {
+		additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
+			Name: ContentTypeJSON,
+			Value: &openapi.MediaType{
+				Schema: &openapi.SchemaOrReference{
+					Oneof: &openapi.SchemaOrReference_Schema{
+						Schema: bodySchema,
 					},
 				},
-			})
-		}
+			},
+		})
+	}
 
-		if len(formSchema.Properties.AdditionalProperties) > 0 {
-			additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
-				Name: ContentTypeFormMultipart,
-				Value: &openapi.MediaType{
-					Schema: &openapi.SchemaOrReference{
-						Oneof: &openapi.SchemaOrReference_Schema{
-							Schema: formSchema,
-						},
+	if len(additionalProperties) > 0 {
+		RequestBody = &openapi.RequestBodyOrReference{
+			Oneof: &openapi.RequestBodyOrReference_RequestBody{
+				RequestBody: &openapi.RequestBody{
+					Description: g.filterCommentString(inputMessage.Comments.Leading),
+					Content: &openapi.MediaTypes{
+						AdditionalProperties: additionalProperties,
 					},
 				},
-			})
-
-			additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
-				Name: ContentTypeFormURLEncoded,
-				Value: &openapi.MediaType{
-					Schema: &openapi.SchemaOrReference{
-						Oneof: &openapi.SchemaOrReference_Schema{
-							Schema: formSchema,
-						},
-					},
-				},
-			})
-		}
-
-		if len(rawBodySchema.Properties.AdditionalProperties) > 0 {
-			additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
-				Name: ContentTypeRawBody,
-				Value: &openapi.MediaType{
-					Schema: &openapi.SchemaOrReference{
-						Oneof: &openapi.SchemaOrReference_Schema{
-							Schema: rawBodySchema,
-						},
-					},
-				},
-			})
-		}
-
-		if len(additionalProperties) > 0 {
-			RequestBody = &openapi.RequestBodyOrReference{
-				Oneof: &openapi.RequestBodyOrReference_RequestBody{
-					RequestBody: &openapi.RequestBody{
-						Description: g.filterCommentString(inputMessage.Comments.Leading),
-						Content: &openapi.MediaTypes{
-							AdditionalProperties: additionalProperties,
-						},
-					},
-				},
-			}
+			},
 		}
 	}
 
-	name, header, content := g.getResponseForMessage(d, outputMessage)
+	name, content := g.getResponseForMessage(d, outputMessage)
 
 	desc := g.filterCommentString(outputMessage.Comments.Leading)
 	if desc == "" {
 		desc = DefaultResponseDesc
 	}
 
-	var headerOrEmpty *openapi.HeadersOrReferences
-	if len(header.AdditionalProperties) != 0 {
-		headerOrEmpty = header
-	}
 	var contentOrEmpty *openapi.MediaTypes
 	if len(content.AdditionalProperties) != 0 {
 		contentOrEmpty = content
 	}
 	var responses *openapi.Responses
-	if headerOrEmpty != nil || contentOrEmpty != nil {
+	if contentOrEmpty != nil {
 		responses = &openapi.Responses{
 			ResponseOrReference: []*openapi.NamedResponseOrReference{
 				{
@@ -556,7 +407,6 @@ func (g *OpenAPIGenerator) buildOperation(
 						Oneof: &openapi.ResponseOrReference_Response{
 							Response: &openapi.Response{
 								Description: desc,
-								Headers:     headerOrEmpty,
 								Content:     contentOrEmpty,
 							},
 						},
@@ -587,30 +437,9 @@ func (g *OpenAPIGenerator) buildOperation(
 	return op, path
 }
 
-func (g *OpenAPIGenerator) getResponseForMessage(d *openapi.Document, message *protogen.Message) (string, *openapi.HeadersOrReferences, *openapi.MediaTypes) {
-	headers := &openapi.HeadersOrReferences{AdditionalProperties: []*openapi.NamedHeaderOrReference{}}
+func (g *OpenAPIGenerator) getResponseForMessage(d *openapi.Document, message *protogen.Message) (string, *openapi.MediaTypes) {
 
-	for _, field := range message.Fields {
-		if ext := proto.GetExtension(field.Desc.Options(), api.E_Header); ext != "" {
-			headerName := proto.GetExtension(field.Desc.Options(), api.E_Header).(string)
-			header := &openapi.Header{
-				Description: g.filterCommentString(field.Comments.Leading),
-				Schema:      g.reflect.schemaOrReferenceForField(field.Desc),
-			}
-			headers.AdditionalProperties = append(headers.AdditionalProperties, &openapi.NamedHeaderOrReference{
-				Name: headerName,
-				Value: &openapi.HeaderOrReference{
-					Oneof: &openapi.HeaderOrReference_Header{
-						Header: header,
-					},
-				},
-			})
-		}
-	}
-
-	// get api.body、api.raw_body option schema
-	bodySchema := g.getSchemaByOption(message, api.E_Body)
-	rawBodySchema := g.getSchemaByOption(message, api.E_RawBody)
+	bodySchema := g.getSchemaByOption(message)
 
 	var additionalProperties []*openapi.NamedMediaType
 
@@ -633,34 +462,15 @@ func (g *OpenAPIGenerator) getResponseForMessage(d *openapi.Document, message *p
 		})
 	}
 
-	if len(rawBodySchema.Properties.AdditionalProperties) > 0 {
-		refSchema := &openapi.NamedSchemaOrReference{
-			Name:  g.reflect.formatMessageName(message.Desc) + ComponentSchemaSuffixRawBody,
-			Value: &openapi.SchemaOrReference{Oneof: &openapi.SchemaOrReference_Schema{Schema: rawBodySchema}},
-		}
-		ref := ComponentSchemaPrefix + g.reflect.formatMessageName(message.Desc) + ComponentSchemaSuffixRawBody
-		g.addSchemaToDocument(d, refSchema)
-		additionalProperties = append(additionalProperties, &openapi.NamedMediaType{
-			Name: ContentTypeRawBody,
-			Value: &openapi.MediaType{
-				Schema: &openapi.SchemaOrReference{
-					Oneof: &openapi.SchemaOrReference_Reference{
-						Reference: &openapi.Reference{XRef: ref},
-					},
-				},
-			},
-		})
-	}
-
 	content := &openapi.MediaTypes{
 		AdditionalProperties: additionalProperties,
 	}
 
-	return StatusOK, headers, content
+	return StatusOK, content
 }
 
 // addOperationToDocument adds an operation to the specified path/method.
-func (g *OpenAPIGenerator) addOperationToDocument(d *openapi.Document, op *openapi.Operation, path, methodName string) {
+func (g *OpenAPIGenerator) addOperationToDocument(d *openapi.Document, op *openapi.Operation, path string) {
 	var selectedPathItem *openapi.NamedPathItem
 	for _, namedPathItem := range d.Paths.Path {
 		if namedPathItem.Name == path {
@@ -674,22 +484,7 @@ func (g *OpenAPIGenerator) addOperationToDocument(d *openapi.Document, op *opena
 		d.Paths.Path = append(d.Paths.Path, selectedPathItem)
 	}
 	// Set the operation on the specified method.
-	switch methodName {
-	case HttpMethodGet:
-		selectedPathItem.Value.Get = op
-	case HttpMethodPost:
-		selectedPathItem.Value.Post = op
-	case HttpMethodPut:
-		selectedPathItem.Value.Put = op
-	case HttpMethodDelete:
-		selectedPathItem.Value.Delete = op
-	case HttpMethodPatch:
-		selectedPathItem.Value.Patch = op
-	case HttpMethodOptions:
-		selectedPathItem.Value.Options = op
-	case HttpMethodHead:
-		selectedPathItem.Value.Head = op
-	}
+	selectedPathItem.Value.Post = op
 }
 
 func (g *OpenAPIGenerator) addPathsToDocument(d *openapi.Document, services []*protogen.Service) {
@@ -701,26 +496,23 @@ func (g *OpenAPIGenerator) addPathsToDocument(d *openapi.Document, services []*p
 			inputMessage := method.Input
 			outputMessage := method.Output
 			operationID := service.GoName + "_" + method.GoName
-			rs := api.GetAllOptions(api.HttpMethodOptions, method.Desc.Options())
-			for methodName, path := range rs {
-				if methodName != "" {
-					annotationsCount++
-					var host string
-					host = proto.GetExtension(method.Desc.Options(), api.E_Baseurl).(string)
+			path := "/" + service.GoName + "/" + method.GoName
 
-					if host == "" {
-						host = proto.GetExtension(service.Desc.Options(), api.E_BaseDomain).(string)
-					}
-					op, path2 := g.buildOperation(d, methodName, operationID, service.GoName, comment, host, path.(string), inputMessage, outputMessage)
-					// Merge any `Operation` annotations with the current
-					extOperation := proto.GetExtension(method.Desc.Options(), openapi.E_Operation)
+			annotationsCount++
+			var host string
+			host = proto.GetExtension(method.Desc.Options(), api.E_Baseurl).(string)
 
-					if extOperation != nil {
-						proto.Merge(op, extOperation.(*openapi.Operation))
-					}
-					g.addOperationToDocument(d, op, path2, methodName)
-				}
+			if host == "" {
+				host = proto.GetExtension(service.Desc.Options(), api.E_BaseDomain).(string)
 			}
+			op, path2 := g.buildOperation(d, operationID, service.GoName, comment, host, path, inputMessage, outputMessage)
+			// Merge any `Operation` annotations with the current
+			extOperation := proto.GetExtension(method.Desc.Options(), openapi.E_Operation)
+
+			if extOperation != nil {
+				proto.Merge(op, extOperation.(*openapi.Operation))
+			}
+			g.addOperationToDocument(d, op, path2)
 		}
 		if annotationsCount > 0 {
 			comment := g.filterCommentString(service.Comments.Leading)
@@ -912,4 +704,7 @@ const (
 	ParameterInHeader = "header"
 	ParameterInPath   = "path"
 	ParameterInCookie = "cookie"
+
+	ParameterNameTTHeader = "ttheader"
+	ParameterDescription  = "metainfo for request"
 )

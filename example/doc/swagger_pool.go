@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -27,8 +28,8 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 )
 
-//go:embed openapi.yaml
-var openapiYAML []byte
+//go:embed *.openapi.yaml openapi.yaml
+var files embed.FS
 
 // ClientPool is a map of service name to client
 type ClientPool struct {
@@ -45,7 +46,7 @@ func NewClientPool(protoFiles []string) *ClientPool {
 	for _, protoFile := range protoFiles {
 		err := clientPool.GetServicesFromIDL(protoFile)
 		if err != nil {
-			hlog.Fatalf("Error loading thrift files from directory: %v", err)
+			hlog.Fatalf("Error loading protobuf files from directory: %v", err)
 		}
 	}
 
@@ -110,7 +111,7 @@ func (cp *ClientPool) GetServicesFromIDL(idlPath string) error {
 			cp.serviceMap[s.Name] = newClient(idlPath, s.Name)
 		}),
 	)
-
+	hlog.Info(cp.serviceMap)
 	return nil
 }
 
@@ -120,8 +121,9 @@ func main() {
 
 	protoFiles := []string{
 		"./hello.proto",
+		"./hello2.proto",
 	}
-	// Initialize the client pool with the directory containing Thrift files
+	// Initialize the client pool with the directory containing protobuf files
 	clientPool := NewClientPool(protoFiles)
 
 	setupSwaggerRoutes(h)
@@ -134,9 +136,26 @@ func main() {
 func setupSwaggerRoutes(h *server.Hertz) {
 	h.GET("swagger/*any", swagger.WrapHandler(swaggerFiles.Handler, swagger.URL("/openapi.yaml")))
 
-	h.GET("/openapi.yaml", func(c context.Context, ctx *app.RequestContext) {
+	// 直接通过文件名访问相应的 openapi.yaml 文件
+	h.GET("/:filename", func(c context.Context, ctx *app.RequestContext) {
+		filename := ctx.Param("filename")
+
+		// 验证文件扩展名是否为 .openapi.yaml
+		if !strings.HasSuffix(filename, ".openapi.yaml") && filename != "openapi.yaml" {
+			handleError(ctx, "Invalid file name", http.StatusBadRequest)
+			return
+		}
+
+		// 通过 embed.FS 来直接读取文件，而不是尝试从文件系统加载
+		data, err := files.ReadFile(filename)
+		if err != nil {
+			handleError(ctx, "File not found: "+filename, http.StatusNotFound)
+			return
+		}
+
+		// 设置正确的内容类型并返回文件内容
 		ctx.Header("Content-Type", "application/x-yaml")
-		ctx.Write(openapiYAML)
+		ctx.Write(data)
 	})
 }
 
